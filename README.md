@@ -6,7 +6,51 @@
 
 ## 安装
 
-需要 Go 1.22+。
+### 方式一:一键脚本(推荐,无需安装 Go)
+
+macOS / Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ipfred/yuque-cli/main/scripts/install.sh | sh
+# 或指定版本
+curl -fsSL https://raw.githubusercontent.com/ipfred/yuque-cli/main/scripts/install.sh | sh -s -- 0.1.1
+```
+
+Windows(PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/ipfred/yuque-cli/main/scripts/install.ps1 | iex
+```
+
+脚本自动识别系统与 CPU 架构(包括 Apple Silicon 上的 Rosetta 终端、Windows ARM64),从 GitHub Releases 下载预编译二进制并做 SHA256 校验,装好后保证终端里能用 `yuque-cli`:
+
+- **校验是强制的**:`SHA256SUMS` 缺失、没有对应条目或哈希不匹配都会拒绝安装。
+- macOS / Linux 装到 `~/.local/bin`;若该目录不在 PATH,自动写入 shell 配置,新开终端即生效:
+
+  | Shell | 写入的文件 |
+  |---|---|
+  | zsh | macOS: `~/.zprofile`;Linux: `~/.zshrc`(遵循 `$ZDOTDIR`) |
+  | bash | macOS: `~/.bash_profile`(不存在则 `~/.profile`);Linux: `~/.bashrc` |
+  | fish | 不写文件,提示执行 `fish_add_path <目录>` |
+  | 其他 | `~/.profile` |
+
+- Windows 装到 `%LOCALAPPDATA%\yuque-cli`,并写入用户 PATH(注册表持久化,保留原有的 `%VAR%` 引用),新开终端即生效。覆盖安装时若 `yuque-cli.exe` 正在运行,会先把旧文件改名再替换。
+- 出错时 PowerShell 窗口不会被关闭,只打印错误信息。`install.ps1` 为纯 ASCII(英文提示),避免 Windows PowerShell 5.1 按 ANSI 读取时解析失败。
+
+环境变量(两个脚本通用):
+
+| 变量 | 作用 |
+|---|---|
+| `YUQUE_CLI_VERSION` | 指定版本,如 `0.1.1` 或 `v0.1.1`(默认取最新 Release) |
+| `YUQUE_CLI_BIN_DIR` | 自定义安装目录 |
+| `YUQUE_CLI_DOWNLOAD_BASE` | 内网/镜像的下载前缀,需保持 `<base>/v<版本>/yuque-cli_<版本>_<os>_<arch>.tar.gz`(Windows 为 `.zip`)和 `SHA256SUMS` 的结构 |
+| `YUQUE_CLI_SKIP_VERIFY=1` | 跳过 SHA256 校验,仅限没有 `SHA256SUMS` 的镜像 |
+
+### 方式二:手动下载
+
+从 [Releases](https://github.com/ipfred/yuque-cli/releases) 下载对应平台的压缩包,解压后把二进制放进任意 PATH 目录。
+
+### 方式三:从源码(需要 Go 1.22+)
 
 ```bash
 make install            # 编译到 ~/.local/bin/yuque-cli,并把 skill 装进本机已有的 AI 客户端
@@ -14,7 +58,12 @@ make install            # 编译到 ~/.local/bin/yuque-cli,并把 skill 装进�
 go install ./cmd/yuque-cli  # 只装二进制;之后运行 yuque-cli skill install
 ```
 
-确保 `~/.local/bin`(或 `$(go env GOPATH)/bin`)在 `PATH` 里。`make dist` 可交叉编译 macOS / Linux / Windows 版本。
+确保 `~/.local/bin`(或 `$(go env GOPATH)/bin`)在 `PATH` 里。
+
+### 卸载
+
+- macOS / Linux:先 `yuque-cli skill uninstall`,再 `rm -f ~/.local/bin/yuque-cli`,并删除 shell 配置里 `# added by yuque-cli installer` 注释下的那行 export。
+- Windows:删除 `%LOCALAPPDATA%\yuque-cli`,并在「编辑账户的环境变量」里移除对应 PATH 条目。
 
 ## 配置:登录
 
@@ -92,7 +141,9 @@ skills/                     内嵌的 agent skill
 
 ## 多平台构建与发布(GitHub Actions)
 
-workflow 文件:`.github/workflows/build.yml`。流程:`go vet` + `go test` → 交叉编译 → 打包 → (可选)发布 Release。
+workflow 文件:`.github/workflows/build.yml`。流程:`go vet` + `go test` → 交叉编译 → 打包 → 用构建产物测试安装脚本 → (可选)发布 Release。
+
+安装脚本测试(任一失败都会阻止发布):`install.sh` 在 Ubuntu 和 macOS 上跑,`install.ps1` 在 Windows PowerShell 5.1 上跑。覆盖校验和缺失/不匹配/非法版本号被拒绝、正常安装、PATH 写入、重复安装、`iex` 下失败不关闭会话。
 
 产物(`<版本>` 不带 `v`):
 
@@ -100,7 +151,7 @@ workflow 文件:`.github/workflows/build.yml`。流程:`go vet` + `go test` → 
 |---|---|
 | macOS Apple Silicon / Intel | `yuque-cli_<版本>_darwin_arm64.tar.gz` / `..._darwin_amd64.tar.gz` |
 | Linux x86_64 / ARM64 | `yuque-cli_<版本>_linux_amd64.tar.gz` / `..._linux_arm64.tar.gz` |
-| Windows x86_64 | `yuque-cli_<版本>_windows_amd64.zip` |
+| Windows x86_64 / ARM64 | `yuque-cli_<版本>_windows_amd64.zip` / `..._windows_arm64.zip` |
 | 校验和(仅 Release) | `SHA256SUMS` |
 
 ### 触发方式

@@ -1,4 +1,4 @@
-VERSION ?= 0.1.0
+VERSION ?= 0.1.1
 PREFIX  ?= $(HOME)/.local
 LDFLAGS := -s -w -X yuque-cli/internal/cli.Version=$(VERSION)
 
@@ -25,13 +25,13 @@ uninstall:
 	-$(PREFIX)/bin/yuque-cli skill uninstall
 	rm -f $(PREFIX)/bin/yuque-cli
 
-# 交叉编译,产物在 dist/
+# 交叉编译,产物在 dist/,命名与 CI Release 资产一致(scripts/install.sh 依赖此命名)
 dist:
 	rm -rf dist && mkdir -p dist
-	for t in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64; do \
+	for t in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do \
 		os=$${t%/*}; arch=$${t#*/}; ext=""; [ $$os = windows ] && ext=".exe"; \
 		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" \
-			-o dist/yuque-cli-$(VERSION)-$$os-$$arch$$ext ./cmd/yuque-cli || exit 1; \
+			-o dist/yuque-cli_$(VERSION)_$${os}_$${arch}$$ext ./cmd/yuque-cli || exit 1; \
 	done
 	ls -l dist
 

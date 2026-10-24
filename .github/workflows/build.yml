@@ -35,6 +35,8 @@ jobs:
 
   build:
     needs: test
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -45,6 +47,7 @@ jobs:
           - { goos: linux, goarch: amd64 }
           - { goos: linux, goarch: arm64 }
           - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -109,7 +112,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [build, install-script, install-script-windows]
     if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.release)
     runs-on: ubuntu-latest
     permissions:
@@ -151,3 +154,166 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/SHA256SUMS
+
+  # 用本地构建产物冒烟测试 install.sh(下载、SHA256 校验、安装、PATH 处理)。
+  install-script:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, asset: linux_amd64, profile: .bashrc }
+          - { os: macos-latest, asset: darwin_arm64, profile: .profile }
+    runs-on: ${{ matrix.os }}
+    env:
+      YUQUE_CLI_VERSION: ${{ needs.build.outputs.version }}
+      YUQUE_CLI_DOWNLOAD_BASE: file:///tmp/rel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Lay out local release directory
+        run: |
+          ver="${YUQUE_CLI_VERSION}"
+          asset="yuque-cli_${ver}_${{ matrix.asset }}.tar.gz"
+          mkdir -p "/tmp/rel/v$ver"
+          cp "dist/$asset" "/tmp/rel/v$ver/"
+
+      - name: install.sh refuses unverified or tampered downloads
+        run: |
+          ver="${YUQUE_CLI_VERSION}"
+          asset="yuque-cli_${ver}_${{ matrix.asset }}.tar.gz"
+          export HOME=/tmp/yqbad; rm -rf "$HOME"; mkdir -p "$HOME"
+          expect_fail() {
+            if sh scripts/install.sh >/tmp/out.txt 2>&1; then
+              echo "应当失败却成功: $1" >&2; cat /tmp/out.txt; exit 1
+            fi
+            echo "如预期被拒绝: $1"
+          }
+          rm -f "/tmp/rel/v$ver/SHA256SUMS"
+          expect_fail "缺少 SHA256SUMS"
+          echo "deadbeef  other-file" > "/tmp/rel/v$ver/SHA256SUMS"
+          expect_fail "SHA256SUMS 没有对应条目"
+          echo "0000000000000000000000000000000000000000000000000000000000000000  $asset" > "/tmp/rel/v$ver/SHA256SUMS"
+          expect_fail "校验和不匹配"
+          (export YUQUE_CLI_VERSION='../../x'; expect_fail "非法版本号")
+          test ! -e "$HOME/.local/bin/yuque-cli"
+
+      - name: install.sh installs, configures PATH and runs
+        run: |
+          ver="${YUQUE_CLI_VERSION}"
+          asset="yuque-cli_${ver}_${{ matrix.asset }}.tar.gz"
+          cd "/tmp/rel/v$ver"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > SHA256SUMS
+          else
+            shasum -a 256 "$asset" > SHA256SUMS
+          fi
+          cd - >/dev/null
+          # 隔离 HOME,同时验证 PATH 不含 ~/.local/bin 时的写入逻辑
+          rm -rf /tmp/yqhome && mkdir -p /tmp/yqhome
+          env HOME=/tmp/yqhome SHELL=/bin/bash sh scripts/install.sh
+          test -x /tmp/yqhome/.local/bin/yuque-cli
+          grep -q 'yuque-cli installer' "/tmp/yqhome/${{ matrix.profile }}"
+          /tmp/yqhome/.local/bin/yuque-cli version
+          # 重复安装: 覆盖成功,PATH 配置不重复
+          env HOME=/tmp/yqhome SHELL=/bin/bash sh scripts/install.sh >/dev/null
+          test "$(grep -c 'yuque-cli installer' "/tmp/yqhome/${{ matrix.profile }}")" = 1
+
+      - name: install.sh skip-verify escape hatch
+        run: |
+          ver="${YUQUE_CLI_VERSION}"
+          rm -f "/tmp/rel/v$ver/SHA256SUMS"
+          rm -rf /tmp/yqhome2 && mkdir -p /tmp/yqhome2
+          env HOME=/tmp/yqhome2 SHELL=/bin/bash YUQUE_CLI_SKIP_VERIFY=1 sh scripts/install.sh
+          test -x /tmp/yqhome2/.local/bin/yuque-cli
+
+  # 在真实的 Windows PowerShell 5.1 上测试 install.ps1。
+  # Invoke-WebRequest 不支持 file://,所以用本机 python http.server 充当下载源。
+  install-script-windows:
+    needs: build
+    runs-on: windows-latest
+    env:
+      YUQUE_CLI_VERSION: ${{ needs.build.outputs.version }}
+      YUQUE_CLI_DOWNLOAD_BASE: http://127.0.0.1:8765
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: install.ps1 stays pure ASCII
+        shell: pwsh
+        run: |
+          $bad = [IO.File]::ReadAllBytes('scripts/install.ps1') | Where-Object { $_ -gt 127 }
+          if ($bad) { throw 'scripts/install.ps1 contains non-ASCII bytes (Windows PowerShell 5.1 reads it as ANSI and may fail to parse)' }
+
+      - name: Serve local release directory
+        shell: pwsh
+        run: |
+          $ver = $env:YUQUE_CLI_VERSION
+          $asset = "yuque-cli_${ver}_windows_amd64.zip"
+          $rel = Join-Path $env:RUNNER_TEMP 'rel'
+          $dir = Join-Path $rel "v$ver"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item "dist/$asset" $dir
+          "YUQUE_CLI_BIN_DIR=$env:RUNNER_TEMP\yqbin" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          Start-Process python -ArgumentList '-m','http.server','8765','--bind','127.0.0.1' -WorkingDirectory $rel -WindowStyle Hidden
+          for ($i = 0; $i -lt 20; $i++) {
+            try { Invoke-WebRequest http://127.0.0.1:8765/ -UseBasicParsing | Out-Null; break } catch { Start-Sleep -Milliseconds 500 }
+          }
+
+      - name: install.ps1 refuses unverified or tampered downloads
+        shell: pwsh
+        run: |
+          $ver = $env:YUQUE_CLI_VERSION
+          $asset = "yuque-cli_${ver}_windows_amd64.zip"
+          $sums = Join-Path $env:RUNNER_TEMP "rel\v$ver\SHA256SUMS"
+          $exe = Join-Path $env:YUQUE_CLI_BIN_DIR 'yuque-cli.exe'
+          function Expect-Fail($name) {
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1
+            if ($LASTEXITCODE -eq 0) { throw "should have failed: $name" }
+            if (Test-Path $exe) { throw "binary installed despite failure: $name" }
+            Write-Host "rejected as expected: $name"
+          }
+          Remove-Item $sums -ErrorAction SilentlyContinue
+          Expect-Fail 'missing SHA256SUMS'
+          "deadbeef  other-file" | Set-Content -Encoding ascii $sums
+          Expect-Fail 'no matching entry'
+          "0000000000000000000000000000000000000000000000000000000000000000  $asset" | Set-Content -Encoding ascii $sums
+          Expect-Fail 'checksum mismatch'
+
+      - name: install.ps1 failure under iex must not kill the session
+        shell: pwsh
+        run: |
+          $out = powershell -NoProfile -Command "& { Invoke-Expression (Get-Content -Raw -Encoding UTF8 'scripts/install.ps1'); Write-Output 'SESSION-ALIVE' }" 2>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch 'SESSION-ALIVE') { throw 'iex session was terminated' }
+
+      - name: install.ps1 installs, updates PATH and runs
+        shell: pwsh
+        run: |
+          $ver = $env:YUQUE_CLI_VERSION
+          $asset = "yuque-cli_${ver}_windows_amd64.zip"
+          $dir = Join-Path $env:RUNNER_TEMP "rel\v$ver"
+          $hash = (Get-FileHash -Algorithm SHA256 (Join-Path $dir $asset)).Hash.ToLower()
+          "$hash  $asset" | Set-Content -Encoding ascii (Join-Path $dir 'SHA256SUMS')
+          $exe = Join-Path $env:YUQUE_CLI_BIN_DIR 'yuque-cli.exe'
+
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'install failed' }
+          & $exe version
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (($userPath -split ';') -notcontains $env:YUQUE_CLI_BIN_DIR) { throw 'user PATH was not updated' }
+
+          # Reinstall over an existing binary; PATH must not get a duplicate entry.
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'reinstall failed' }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          $n = ($userPath -split ';' | Where-Object { $_ -eq $env:YUQUE_CLI_BIN_DIR }).Count
+          if ($n -ne 1) { throw "PATH entry count: $n" }
+
