@@ -286,6 +286,7 @@ jobs:
           Expect-Fail 'no matching entry'
           "0000000000000000000000000000000000000000000000000000000000000000  $asset" | Set-Content -Encoding ascii $sums
           Expect-Fail 'checksum mismatch'
+          exit 0   # the last native command failed on purpose; do not let its exit code fail the step
 
       - name: install.ps1 failure under iex must not kill the session
         shell: pwsh
@@ -293,6 +294,7 @@ jobs:
           $out = powershell -NoProfile -Command "& { Invoke-Expression (Get-Content -Raw -Encoding UTF8 'scripts/install.ps1'); Write-Output 'SESSION-ALIVE' }" 2>&1 | Out-String
           Write-Host $out
           if ($out -notmatch 'SESSION-ALIVE') { throw 'iex session was terminated' }
+          exit 0
 
       - name: install.ps1 installs, updates PATH and runs
         shell: pwsh
