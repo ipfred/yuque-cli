@@ -47,16 +47,48 @@ type Env struct {
 	Stderr io.Writer
 	// BaseURL maps a host name to its site root. Defaults to https://{host}.
 	BaseURL func(host string) string
+	// HomeDir, Getwd and Interactive are overridable for tests; nil means the real thing
+	// (Interactive: nil means "not a terminal").
+	HomeDir     func() (string, error)
+	Getwd       func() (string, error)
+	Interactive func() bool
 }
 
 func DefaultEnv() *Env {
-	return &Env{
+	env := &Env{
 		In:      bufio.NewReader(os.Stdin),
 		Stdin:   os.Stdin,
 		Stdout:  os.Stdout,
 		Stderr:  os.Stderr,
 		BaseURL: func(host string) string { return "https://" + host },
 	}
+	env.Interactive = func() bool { return isTerminal(env.Stdin) }
+	return env
+}
+
+func (e *Env) homeDir() (string, error) {
+	if e.HomeDir != nil {
+		return e.HomeDir()
+	}
+	return os.UserHomeDir()
+}
+
+func (e *Env) getwd() (string, error) {
+	if e.Getwd != nil {
+		return e.Getwd()
+	}
+	return os.Getwd()
+}
+
+func (e *Env) interactive() bool { return e.Interactive != nil && e.Interactive() }
+
+// isTerminal reports whether f is a character device (a terminal) rather than a pipe or file.
+func isTerminal(f *os.File) bool {
+	if f == nil {
+		return false
+	}
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
 type Command struct {

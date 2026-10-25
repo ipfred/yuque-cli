@@ -117,16 +117,26 @@ func runAuthLogin(ctx context.Context, env *Env, args []string) error {
 		value = strings.TrimSpace(os.Getenv(config.EnvSession))
 	}
 	if value == "" {
-		fmt.Fprintf(env.Stderr, "请粘贴 %s 的 _yuque_session(输入不会回显,回车确认): ", h)
+		fmt.Fprintf(env.Stderr, "请粘贴 %s 的 _yuque_session(粘贴时不回显,回车后会显示打码后的内容): ", h)
 		value, err = readSecret(env)
 		fmt.Fprintln(env.Stderr)
 		if err != nil {
 			return err
 		}
 	}
+	raw := value
 	value = config.ExtractSession(value)
 	if value == "" {
 		return usageErr("没有读到 session 值")
+	}
+	// Echo is off while pasting, so confirm what arrived without revealing it.
+	note := ""
+	if value != strings.TrimSpace(raw) {
+		note = fmt.Sprintf(",已从 %d 个字符的输入中提取", len(strings.TrimSpace(raw)))
+	}
+	fmt.Fprintf(env.Stderr, "已读取 _yuque_session: %s (共 %d 个字符%s)\n", maskSecret(value), len([]rune(value)), note)
+	if looksTruncated(len(raw)) {
+		fmt.Fprintln(env.Stderr, "警告: 输入长度正好等于终端单行上限,内容可能被截断;粘贴很长的内容请改用管道,例如 pbpaste | yuque-cli auth login --host "+h)
 	}
 
 	if !*noVerify {
@@ -245,18 +255,39 @@ func readLine(env *Env) (string, error) {
 // readSecret reads one line, hiding the echo when stdin is a terminal.
 // If stty is unavailable the input is simply echoed.
 func readSecret(env *Env) (string, error) {
-	if env.Stdin != nil {
-		if fi, err := env.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
-			off := exec.Command("stty", "-echo")
-			off.Stdin = env.Stdin
-			if off.Run() == nil {
-				defer func() {
-					on := exec.Command("stty", "echo")
-					on.Stdin = env.Stdin
-					_ = on.Run()
-				}()
-			}
+	if isTerminal(env.Stdin) {
+		off := exec.Command("stty", "-echo")
+		off.Stdin = env.Stdin
+		if off.Run() == nil {
+			defer func() {
+				on := exec.Command("stty", "echo")
+				on.Stdin = env.Stdin
+				_ = on.Run()
+			}()
 		}
 	}
 	return readLine(env)
+}
+
+// maskSecret keeps the two ends and hides the middle, so a user can tell the paste landed
+// without the value being readable. Short values reveal fewer characters, very short ones none.
+func maskSecret(s string) string {
+	r := []rune(s)
+	keep := 0
+	switch {
+	case len(r) >= 16:
+		keep = 4
+	case len(r) >= 8:
+		keep = 2
+	}
+	if keep == 0 {
+		return strings.Repeat("*", len(r))
+	}
+	return string(r[:keep]) + "***" + string(r[len(r)-keep:])
+}
+
+// Typical single-line input limits of a terminal in canonical mode (macOS 1024, Linux 4096),
+// minus the newline. A paste that stops exactly there was most likely cut off.
+func looksTruncated(n int) bool {
+	return n == 1023 || n == 1024 || n == 4095 || n == 4096
 }

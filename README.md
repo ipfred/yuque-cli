@@ -13,7 +13,7 @@ macOS / Linux:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ipfred/yuque-cli/main/scripts/install.sh | sh
 # 或指定版本
-curl -fsSL https://raw.githubusercontent.com/ipfred/yuque-cli/main/scripts/install.sh | sh -s -- 0.1.1
+curl -fsSL https://raw.githubusercontent.com/ipfred/yuque-cli/main/scripts/install.sh | sh -s -- 0.1.2
 ```
 
 Windows(PowerShell):
@@ -41,7 +41,7 @@ irm https://raw.githubusercontent.com/ipfred/yuque-cli/main/scripts/install.ps1 
 
 | 变量 | 作用 |
 |---|---|
-| `YUQUE_CLI_VERSION` | 指定版本,如 `0.1.1` 或 `v0.1.1`(默认取最新 Release) |
+| `YUQUE_CLI_VERSION` | 指定版本,如 `0.1.2` 或 `v0.1.2`(默认取最新 Release) |
 | `YUQUE_CLI_BIN_DIR` | 自定义安装目录 |
 | `YUQUE_CLI_DOWNLOAD_BASE` | 内网/镜像的下载前缀,需保持 `<base>/v<版本>/yuque-cli_<版本>_<os>_<arch>.tar.gz`(Windows 为 `.zip`)和 `SHA256SUMS` 的结构 |
 | `YUQUE_CLI_SKIP_VERIFY=1` | 跳过 SHA256 校验,仅限没有 `SHA256SUMS` 的镜像 |
@@ -53,7 +53,7 @@ irm https://raw.githubusercontent.com/ipfred/yuque-cli/main/scripts/install.ps1 
 ### 方式三:从源码(需要 Go 1.22+)
 
 ```bash
-make install            # 编译到 ~/.local/bin/yuque-cli,并把 skill 装进本机已有的 AI 客户端
+make install            # 编译到 ~/.local/bin/yuque-cli,并把 skill 装进本机已检测到的 AI 工具(不提问)
 # 或
 go install ./cmd/yuque-cli  # 只装二进制;之后运行 yuque-cli skill install
 ```
@@ -74,7 +74,13 @@ go install ./cmd/yuque-cli  # 只装二进制;之后运行 yuque-cli skill insta
 yuque-cli auth login https://xxx.yuque.com/团队/知识库/文档    # 或 --host xxx.yuque.com
 ```
 
-按提示粘贴(不回显)。整段 Cookie 或整条 curl 命令也行,会自动提取。凭证校验通过后才会保存到 `~/.config/yuque-cli/config.json`(权限 0600)。可按域名保存多个空间。
+按提示粘贴(粘贴时不回显)。整段 Cookie 或整条 curl 命令也行,会自动提取。回车后会显示打码后的内容,确认已经粘贴成功:
+
+```
+已读取 _yuque_session: AbCd***WxYz (共 128 个字符)
+```
+
+只显示首尾各 4 个字符和总长度。长度正好是 1023/1024 之类的终端单行上限时会提示可能被截断,这时请改用管道(`pbpaste | yuque-cli auth login --host ...`)。凭证校验通过后才会保存到 `~/.config/yuque-cli/config.json`(权限 0600)。可按域名保存多个空间。
 
 | 命令 | 说明 |
 |---|---|
@@ -99,14 +105,47 @@ yuque-cli <文档链接>                    # 简写
 
 ## Skill
 
-`yuque-cli skill install` 会把内嵌的 `yuque-reader` skill 写入已检测到的客户端目录(`~/.claude/skills`、`~/.factory/skills`、`~/.codex/skills`、`~/.config/opencode/skills`)。
+`yuque-cli skill install` 把内嵌的 `yuque-reader` skill 写入 AI 工具的 skills 目录。在终端里直接运行会交互式询问两件事:
+
+```
+$ yuque-cli skill install
+安装位置:
+  1) 全局        装到 ~/ 下(如 ~/.claude/skills),所有项目通用
+  2) 当前项目    装到 /path/to/project 下(如 ./.claude/skills),只对该项目生效
+选择 [1]: 2
+
+安装到哪些 AI 工具?
+  1) agents    ./.agents/skills            通用 .agents 约定
+  2) claude    ./.claude/skills            Claude Code  [已检测到]
+  3) factory   ./.factory/skills           Factory Droid
+  4) codex     ./.codex/skills             Codex CLI
+  5) opencode  ./.opencode/skills          OpenCode
+可多选: 输入编号或名称,逗号分隔(如 1,3);a = 全部。
+选择 [回车 = claude]: 1,2
+```
+
+| 工具 | 全局 | 项目 |
+|---|---|---|
+| agents | `~/.agents/skills` | `./.agents/skills` |
+| claude | `~/.claude/skills` | `./.claude/skills` |
+| factory | `~/.factory/skills` | `./.factory/skills` |
+| codex | `~/.codex/skills` | `./.codex/skills` |
+| opencode | `~/.config/opencode/skills` | `./.opencode/skills` |
+
+"当前项目"指运行命令时所在的目录。菜单里标 `[已检测到]` 的是配置目录已存在的工具,回车默认选它们(一个都没有则选 agents)。`uninstall` 同样交互,默认选已安装的位置。
+
+不想被询问时用选项直接指定;只给出一部分,则只询问缺少的那部分:
 
 ```bash
-yuque-cli skill install --target claude,factory   # 指定客户端
-yuque-cli skill install --dir /path/to/skills     # 自定义目录
+yuque-cli skill install --scope global --target claude,factory   # 全局,指定工具
+yuque-cli skill install --scope project --target all             # 当前目录下,所有工具
+yuque-cli skill install --dir /path/to/skills                    # 自定义目录
+yuque-cli skill install --yes                                    # 不提问,全局 + 已检测到的工具
 yuque-cli skill uninstall
-yuque-cli skill print                             # 查看内容
+yuque-cli skill print                                            # 查看内容
 ```
+
+不在终端里运行(管道、脚本、CI)时从不提问,等同于 `--yes`。`make install` 也是如此。
 
 之后在对话里给 agent 一个语雀链接,它会调用 `yuque-cli doc get`。skill 源文件是 `skills/yuque-reader/SKILL.md`,编译时嵌入二进制,修改后需重新编译再 `skill install`。
 
